@@ -1,0 +1,11 @@
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+backend/data/daphnet/
+node_modules/
+frontend/dist/
+.env
+.env.*
+!.env.example
+.vscode/
