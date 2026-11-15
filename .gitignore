@@ -9,3 +9,4 @@ frontend/dist/
 .env.*
 !.env.example
 .vscode/
+backend/recordings/*.sqlite3

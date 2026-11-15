@@ -1,119 +1,65 @@
+"""Read the ESP32 CSV stream and post batches to the local StrideSense API."""
+from __future__ import annotations
 
+import argparse
 import time
-import serial
 import requests
+import serial
 
-SERIAL_PORT = "COM6"
 
-BAUD_RATE = 115200
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--port", default="COM6", help="ESP32 serial port, e.g. COM6")
+    parser.add_argument("--baud", type=int, default=115200)
+    parser.add_argument("--api", default="http://127.0.0.1:8000/api/imu/batch")
+    parser.add_argument("--batch-size", type=int, default=32)
+    args = parser.parse_args()
 
-API_URL = "http://127.0.0.1:8000/api/imu/batch"
-
-# 32 readings at 64 Hz = approximately 0.5 seconds.
-BATCH_SIZE = 32
-
-batch = []
-
-print("Starting StrideSense serial bridge...")
-print("Connecting to", SERIAL_PORT)
-
-try:
-
-    with serial.Serial(
-        SERIAL_PORT,
-        BAUD_RATE,
-        timeout=2
-    ) as ser:
-
-        # Allow the ESP32 to reset after serial connection.
-        time.sleep(2)
-
-        ser.reset_input_buffer()
-
-        print("ESP32 connected.")
-        print("Streaming sensor readings to FastAPI...")
-
-        while True:
-
-            line = ser.readline().decode(
-                "utf-8",
-                errors="ignore"
-            ).strip()
-
-            if not line:
-                continue
-
-            # Ignore firmware startup messages and CSV header.
-            if (
-                line.startswith("STRIDESENSE") or
-                line.startswith("timestamp_us") or
-                line.startswith("ERROR")
-            ):
-                print(line)
-                continue
-
-            parts = line.split(",")
-
-            if len(parts) != 7:
-                continue
-
-            try:
-
-                sample = {
-                    "timestamp_us": int(parts[0]),
-                    "ax_g": float(parts[1]),
-                    "ay_g": float(parts[2]),
-                    "az_g": float(parts[3]),
-                    "gx_dps": float(parts[4]),
-                    "gy_dps": float(parts[5]),
-                    "gz_dps": float(parts[6])
-                }
-
-            except ValueError:
-                continue
-
-            batch.append(sample)
-
-            if len(batch) >= BATCH_SIZE:
-
+    batch = []
+    print(f"Connecting to ESP32 on {args.port} at {args.baud} baud...")
+    try:
+        with serial.Serial(args.port, args.baud, timeout=2) as ser:
+            time.sleep(2)  # ESP32 boards may reset when serial opens.
+            ser.reset_input_buffer()
+            print("ESP32 connected. Streaming sensor batches to StrideSense.")
+            while True:
+                line = ser.readline().decode("utf-8", errors="ignore").strip()
+                if not line or line.startswith(("STRIDESENSE", "timestamp_us", "SENSOR", "ERROR")):
+                    continue
+                parts = line.split(",")
+                if len(parts) != 7:
+                    continue
                 try:
+                    sample = {
+                        "timestamp_us": int(parts[0]),
+                        "ax_g": float(parts[1]),
+                        "ay_g": float(parts[2]),
+                        "az_g": float(parts[3]),
+                        "gx_dps": float(parts[4]),
+                        "gy_dps": float(parts[5]),
+                        "gz_dps": float(parts[6]),
+                    }
+                except ValueError:
+                    continue
+                batch.append(sample)
+                if len(batch) >= args.batch_size:
+                    try:
+                        response = requests.post(args.api, json={"samples": batch}, timeout=5)
+                        response.raise_for_status()
+                        result = response.json()
+                        if "research_model_score" in result:
+                            print(f"Received {len(batch)} samples | uncalibrated research score: {result['research_model_score']:.4f}")
+                        else:
+                            print(f"Received {len(batch)} samples | buffer: {result.get('buffer_size')}")
+                    except requests.RequestException as exc:
+                        print(f"API send failed: {exc}")
+                    batch.clear()
+    except serial.SerialException as exc:
+        print(f"Serial error: {exc}")
+        print("Check the COM port and close Arduino Serial Monitor.")
+    except KeyboardInterrupt:
+        print("\nSerial bridge stopped.")
 
-                    response = requests.post(
-                        API_URL,
-                        json={"samples": batch},
-                        timeout=5
-                    )
 
-                    response.raise_for_status()
-
-                    result = response.json()
-
-                    score = result.get(
-                        "research_model_score"
-                    )
-
-                    if score is not None:
-                        print(
-                            "Sensor batch received | "
-                            f"Model score: {score:.3f}"
-                        )
-                    else:
-                        print(
-                            "Sensor batch received | "
-                            f"Buffer: {result.get('buffer_size')}"
-                        )
-
-                except requests.RequestException as error:
-
-                    print("Backend communication error:", error)
-
-                batch.clear()
-
-except serial.SerialException as error:
-
-    print("Serial connection error:", error)
-    print("Check the ESP32 port and USB connection.")
-
-except KeyboardInterrupt:
-
-    print("\nStrideSense serial bridge stopped.")
+if __name__ == "__main__":
+    main()
